@@ -38,7 +38,7 @@ the prompt on the black card.
 
 Every tool response includes:
 - `structuredContent.nextAction`: A hint telling ChatGPT what tool to call next
-- `_meta.gameState`: The full current game state (plus `gameId` and `gameKey`)
+- `structuredContent.gameState`: The full current game state (plus `gameId` and `gameKey`)
 
 Use `nextAction.action` to determine the next step:
 - `"submit-cpu-answers"` — CPU players need to play cards

@@ -7,14 +7,16 @@
   0%,
   100% {
     box-shadow:
-      0 12px 30px -10px rgba(15, 23, 42, 0.55),
-      0 0 14px 3px rgba(250, 204, 21, 0.7);
+      inset 0 0 0 4px #f5d060,
+      0 0 14px 4px rgba(251, 191, 36, 0.6),
+      0 12px 30px -10px rgba(15, 23, 42, 0.55);
   }
 
   50% {
     box-shadow:
-      0 14px 34px -12px rgba(15, 23, 42, 0.6),
-      0 0 20px 5px rgba(250, 204, 21, 0.95);
+      inset 0 0 0 4px #fde68a,
+      0 0 22px 8px rgba(251, 191, 36, 0.9),
+      0 14px 34px -10px rgba(15, 23, 42, 0.6);
   }
 }
 

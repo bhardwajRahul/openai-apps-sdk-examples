@@ -14,21 +14,9 @@ interface InitializeNewGameAction {
   firstPrompt: string;
 }
 
-interface WaitingForPlayersAction {
-  type: "WAITING_FOR_PLAYERS";
-}
-
-interface PlayerJoinedAction {
-  type: "PLAYER_JOINED";
-  player: { id: string; persona: Persona };
-}
-
-interface DealCardsAction {
-  type: "DEAL_CARDS";
-}
-
-interface WaitingForAnswersAction {
-  type: "WAITING_FOR_ANSWERS";
+interface DealReplacementCardsAction {
+  type: "DEAL_REPLACEMENT_CARDS";
+  replacementCards: Array<{ playerId: string; card: AnswerCard }>;
 }
 
 interface JudgingAction {
@@ -68,10 +56,7 @@ interface PlayerPlayedAnswerCardAction {
 
 type GameAction =
   | InitializeNewGameAction
-  | WaitingForPlayersAction
-  | PlayerJoinedAction
-  | DealCardsAction
-  | WaitingForAnswersAction
+  | DealReplacementCardsAction
   | JudgingAction
   | ReturnJudgementAction
   | PromptReceivedAction
@@ -92,8 +77,6 @@ interface GameInstanceOptions {
   firstPrompt: string;
 }
 
-const ANSWER_HAND_SIZE = 7;
-
 export class GameInstance {
   /** A unique key for the game instance. This can be used later to join the game. */
   readonly key = generateKey();
@@ -105,11 +88,9 @@ export class GameInstance {
     prompt: null,
     playedAnswerCards: [],
     players: [],
-    status: "waiting-for-players",
+    status: "initializing",
     currentJudgePlayerIndex: 0,
     answerCards: {},
-    answerDeck: [],
-    discardedAnswerCards: [],
     discardedPromptCards: [],
     judgementResult: null,
     winnerId: null,
@@ -128,7 +109,7 @@ export class GameInstance {
     const texts: string[] = [];
 
     for (const player of this.state.players) {
-      if (player.type === "vacant" || player.id === judge?.id) {
+      if (player.id === judge?.id) {
         continue;
       }
       for (const cardId of player.answerCards) {
@@ -148,19 +129,6 @@ export class GameInstance {
       players: this.options.players,
       firstPrompt: this.options.firstPrompt,
     });
-  }
-
-  hasVacancy() {
-    return this.state.players.some((player) => player.type === "vacant");
-  }
-
-  joinPlayer(player: { id: string; persona: Persona }) {
-    if (!this.hasVacancy()) {
-      return false;
-    }
-
-    this.dispatchAction({ type: "PLAYER_JOINED", player });
-    return true;
   }
 
   playAnswerCard(playerId: string, cardId: string, playerComment?: string) {
@@ -242,7 +210,6 @@ export class GameInstance {
    * Submit CPU judgement from ChatGPT.
    */
   submitCpuJudgement(result: { winningCardId: string; reactionToWinningCard?: string }) {
-    const judge = this.state.players[this.state.currentJudgePlayerIndex];
     const playedAnswerCards = this.state.playedAnswerCards;
 
     let winningCardId = result.winningCardId;
@@ -252,15 +219,17 @@ export class GameInstance {
 
     const winningEntry = findPlayedAnswerCard(playedAnswerCards, winningCardId);
     if (!winningEntry) {
-      console.warn("CPU judgement winning card not found in played answers", {
-        winningCardId,
-      });
-      return;
+      throw new Error("CPU judgement winning card not found in played answers");
+    }
+
+    const judge = this.state.players[this.state.currentJudgePlayerIndex];
+    if (!judge) {
+      throw new Error("No judge found");
     }
 
     const reaction = sanitizeCpuReaction(
       result.reactionToWinningCard,
-      judge?.persona?.name,
+      judge.persona?.name,
     );
     this.judgeAnswers({
       judgeId: judge.id,
@@ -280,7 +249,7 @@ export class GameInstance {
 
     // Deal replacement cards before setting new prompt
     if (replacementCards && replacementCards.length > 0) {
-      this.dealReplacementCards(replacementCards);
+      this.dispatchAction({ type: "DEAL_REPLACEMENT_CARDS", replacementCards });
     }
 
     const prompt: PromptCard = {
@@ -289,34 +258,6 @@ export class GameInstance {
       text: promptText.trim(),
     };
     this.dispatchAction({ type: "PROMPT_RECEIVED", prompt });
-  }
-
-  /**
-   * Deal replacement cards to players.
-   */
-  private dealReplacementCards(replacementCards: Array<{ playerId: string; card: AnswerCard }>) {
-    const newAnswerCards = { ...this.state.answerCards };
-    const updatedPlayers = this.state.players.map((player) => {
-      const replacement = replacementCards.find((r) => r.playerId === player.id);
-      if (!replacement) {
-        return player;
-      }
-
-      // Add card to registry
-      newAnswerCards[replacement.card.id] = replacement.card;
-
-      // Add card to player's hand
-      return {
-        ...player,
-        answerCards: [...player.answerCards, replacement.card.id],
-      };
-    });
-
-    this.state = {
-      ...this.state,
-      answerCards: newAnswerCards,
-      players: updatedPlayers,
-    };
   }
 
   /**
@@ -443,7 +384,7 @@ export class GameInstance {
       };
     }
 
-    if (status === "prepare-for-next-round" || status === "dealing") {
+    if (status === "prepare-for-next-round") {
       return {
         action: "submit-prompt",
         description: "Submit a new prompt card and replacement answer cards for the next round.",
@@ -483,15 +424,7 @@ export class GameInstance {
         const players: Player[] = action.players.map((playerInput) => ({
           id: playerInput.id,
           type: playerInput.type,
-          persona: playerInput.persona ? {
-            id: playerInput.persona.id,
-            name: playerInput.persona.name ?? playerInput.name,
-            personality: playerInput.persona.personality,
-            likes: playerInput.persona.likes,
-            dislikes: playerInput.persona.dislikes,
-            humorStyle: playerInput.persona.humorStyle,
-            favoriteJokeTypes: playerInput.persona.favoriteJokeTypes,
-          } : {
+          persona: playerInput.persona ?? {
             id: playerInput.id,
             name: playerInput.name,
             personality: "",
@@ -520,74 +453,25 @@ export class GameInstance {
           status: "waiting-for-answers",
           players,
           answerCards,
-          answerDeck: [],
           prompt: firstPrompt,
           currentJudgePlayerIndex: judgeIndex,
         };
       }
-      case "WAITING_FOR_PLAYERS": {
+      case "DEAL_REPLACEMENT_CARDS": {
+        const newAnswerCards = { ...prevState.answerCards };
+        const updatedPlayers = prevState.players.map((player) => {
+          const replacement = action.replacementCards.find((r) => r.playerId === player.id);
+          if (!replacement) return player;
+          newAnswerCards[replacement.card.id] = replacement.card;
+          return {
+            ...player,
+            answerCards: [...player.answerCards, replacement.card.id],
+          };
+        });
         return {
           ...prevState,
-          status: "waiting-for-players",
-        };
-      }
-      case "PLAYER_JOINED": {
-        let assigned = false;
-        return {
-          ...prevState,
-          players: prevState.players.map((player) => {
-            if (!assigned && player.type === "vacant") {
-              assigned = true;
-              return {
-                ...player,
-                id: action.player.id,
-                type: "human",
-                persona: action.player.persona,
-              };
-            }
-
-            return player;
-          }),
-        };
-      }
-      case "DEAL_CARDS": {
-        const players = Array.from(prevState.players);
-        let answerDeck = [...prevState.answerDeck];
-        let discardedAnswerCards = [...prevState.discardedAnswerCards];
-
-        let i = 0;
-        while (
-          players.some((player) => player.answerCards.length < ANSWER_HAND_SIZE)
-        ) {
-          const playerIndex = i % players.length;
-          const player = players[playerIndex];
-          if (player.answerCards.length < ANSWER_HAND_SIZE) {
-            let nextCardId = answerDeck.shift();
-            if (!nextCardId) {
-              answerDeck = Array.from(fisherYatesShuffle(discardedAnswerCards));
-              discardedAnswerCards = [];
-              nextCardId = answerDeck.shift()!;
-            }
-            players[playerIndex] = {
-              ...player,
-              answerCards: [...player.answerCards, nextCardId],
-            };
-          }
-          i++;
-        }
-
-        return {
-          ...prevState,
-          players,
-          answerDeck,
-          discardedAnswerCards,
-          status: prevState.prompt ? "waiting-for-answers" : "dealing",
-        };
-      }
-      case "WAITING_FOR_ANSWERS": {
-        return {
-          ...prevState,
-          status: "waiting-for-answers",
+          answerCards: newAnswerCards,
+          players: updatedPlayers,
         };
       }
       case "JUDGING": {
@@ -625,10 +509,6 @@ export class GameInstance {
           ...prevState,
           status: "prepare-for-next-round",
           playedAnswerCards: [],
-          discardedAnswerCards: [
-            ...prevState.discardedAnswerCards,
-            ...prevState.playedAnswerCards.map((played) => played.cardId),
-          ],
           discardedPromptCards,
           prompt: null,
           judgementResult: null,
@@ -716,7 +596,7 @@ export class GameInstance {
   private getExpectedAnswerCount() {
     const judge = this.state.players[this.state.currentJudgePlayerIndex];
     return this.state.players.reduce((count, player) => {
-      if (player.type !== "vacant" && player.id !== judge?.id) {
+      if (player.id !== judge?.id) {
         return count + 1;
       }
       return count;
@@ -729,15 +609,6 @@ function generateKey() {
   return Math.random()
     .toString(36)
     .substring(2, keyLength + 2);
-}
-
-export function fisherYatesShuffle<T>(array: T[]): T[] {
-  const result = [...array];
-  for (let index = result.length - 1; index > 0; index -= 1) {
-    const randomIndex = Math.floor(Math.random() * (index + 1));
-    [result[index], result[randomIndex]] = [result[randomIndex], result[index]];
-  }
-  return result;
 }
 
 function sanitizeCpuComment(comment: string | undefined, fallbackName?: string | null) {

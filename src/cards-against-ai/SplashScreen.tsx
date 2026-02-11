@@ -2,7 +2,10 @@ import cardBackPattern from "./assets/card-back-pattern.png";
 import { getAssetsBaseUrl } from "./api-base-url";
 import type { GameStatus } from "./types";
 
-const LOADING_STATUSES: GameStatus[] = ["initializing", "waiting-for-players"];
+const assetsBaseUrl = getAssetsBaseUrl();
+const cardBackPatternUrl = assetsBaseUrl
+  ? new URL(cardBackPattern, assetsBaseUrl).toString()
+  : cardBackPattern;
 
 interface SplashScreenProps {
   status: GameStatus;
@@ -10,16 +13,7 @@ interface SplashScreenProps {
 }
 
 export function SplashScreen({ status, onStart }: SplashScreenProps) {
-  const isLoading = LOADING_STATUSES.includes(status);
-
-  const assetsBaseUrl = getAssetsBaseUrl();
-  const cardBackPatternUrl = assetsBaseUrl
-    ? new URL(cardBackPattern, assetsBaseUrl).toString()
-    : cardBackPattern;
-
-  const handleStartClick = () => {
-    onStart();
-  };
+  const isLoading = status === "initializing";
 
   return (
     <div className="relative flex h-full min-h-[280px] flex-col items-center justify-center gap-6 overflow-hidden px-6 py-8">
@@ -57,7 +51,7 @@ export function SplashScreen({ status, onStart }: SplashScreenProps) {
         ) : (
           <button
             type="button"
-            onClick={handleStartClick}
+            onClick={onStart}
             className="rounded-lg bg-slate-900 px-6 py-2.5 text-sm font-semibold text-white shadow-md transition-all hover:bg-slate-800 hover:shadow-lg active:scale-95 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-200"
           >
             Start Game

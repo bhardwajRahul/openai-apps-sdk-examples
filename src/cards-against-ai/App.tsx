@@ -9,6 +9,12 @@ import type { GameState } from "./types";
 /** Widget-side timeout for watch-game-state calls (above the server's 45s hold). */
 const WATCH_TOOL_TIMEOUT_MS = 55_000;
 
+/**
+ * Runs a continuous long-poll loop for game state changes.
+ * Returns a `sendGameMessage` helper that safely pauses the watch loop
+ * before calling `app.sendMessage()` — preventing concurrent MCP bridge
+ * operations that can corrupt ChatGPT's internal message tree.
+ */
 function useWatchGameState(
   app: McpApp | null,
   gameId: string | null,
@@ -17,11 +23,24 @@ function useWatchGameState(
 ) {
   const gameStateRef = useRef(gameState);
   gameStateRef.current = gameState;
+  const appRef = useRef(app);
+  appRef.current = app;
+  const gameIdRef = useRef(gameId);
+  gameIdRef.current = gameId;
+  const watchAbortRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    if (!app || !gameState || !gameId) return;
+  // Imperatively (re)starts the watch loop. Reads app/gameId/gameState
+  // from refs so the function identity is stable across renders.
+  const startWatchLoop = useCallback(() => {
+    watchAbortRef.current?.abort();
+    watchAbortRef.current = null;
+
+    const currentApp = appRef.current;
+    const currentGameId = gameIdRef.current;
+    if (!currentApp || !gameStateRef.current || !currentGameId) return;
 
     const abort = new AbortController();
+    watchAbortRef.current = abort;
     const { signal } = abort;
 
     (async () => {
@@ -29,10 +48,10 @@ function useWatchGameState(
 
       while (!signal.aborted) {
         try {
-          const result = await app.callServerTool(
+          const result = await currentApp.callServerTool(
             {
               name: "watch-game-state",
-              arguments: { gameId, knownStatus },
+              arguments: { gameId: currentGameId, knownStatus },
             },
             { timeout: WATCH_TOOL_TIMEOUT_MS },
           );
@@ -45,14 +64,16 @@ function useWatchGameState(
           if (!sc) continue;
 
           if (sc.type === "timeout") {
-            // Server timed out with no change — retry immediately
             continue;
           }
 
-          // State changed — update
           if (sc.gameState) {
             setGameState(sc.gameState);
             knownStatus = sc.gameState.status;
+
+            if (knownStatus === "announce-winner" || knownStatus === "game-ended") {
+              return;
+            }
             continue;
           }
 
@@ -64,9 +85,40 @@ function useWatchGameState(
         }
       }
     })();
+  }, [setGameState]);
 
-    return () => abort.abort();
-  }, [app, !!gameState, gameId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Start the loop when key inputs become available; clean up on unmount.
+  useEffect(() => {
+    if (!app || !gameState || !gameId) return;
+
+    startWatchLoop();
+
+    return () => {
+      watchAbortRef.current?.abort();
+      watchAbortRef.current = null;
+    };
+  }, [app, !!gameState, gameId, startWatchLoop]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Abort the watch loop before sending a message, then restart it after.
+  // This prevents concurrent MCP bridge operations.
+  const sendGameMessage = useCallback(
+    async (text: string) => {
+      const currentApp = appRef.current;
+      if (!currentApp) return;
+      watchAbortRef.current?.abort();
+      try {
+        await currentApp.sendMessage({
+          role: "user",
+          content: [{ type: "text", text }],
+        });
+      } finally {
+        startWatchLoop();
+      }
+    },
+    [startWatchLoop],
+  );
+
+  return sendGameMessage;
 }
 
 function useCardsAgainstAIGame() {
@@ -93,13 +145,13 @@ function useCardsAgainstAIGame() {
     onAppCreated,
   });
 
-  useWatchGameState(app, gameId, gameState, setGameState);
+  const sendGameMessage = useWatchGameState(app, gameId, gameState, setGameState);
 
-  return { gameState, app } as const;
+  return { gameState, gameId, app, sendGameMessage } as const;
 }
 
 export default function App() {
-  const { gameState, app } = useCardsAgainstAIGame();
+  const { gameState, gameId, app, sendGameMessage } = useCardsAgainstAIGame();
   const [pipStarted, setPipStarted] = useState(false);
 
   if (!pipStarted) {
@@ -118,5 +170,7 @@ export default function App() {
     return <div>Loading...</div>;
   }
 
-  return <PlayArea gameState={gameState} />;
+  return (
+  <PlayArea gameId={gameId} gameState={gameState} sendGameMessage={sendGameMessage} />
+  );
 }

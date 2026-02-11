@@ -22,7 +22,7 @@ export interface Persona {
 
 export interface Player {
   id: string;
-  type: "human" | "cpu" | "vacant";
+  type: "human" | "cpu";
   persona: Persona | null;
   wonPromptCards: PromptCard[];
   answerCards: string[];
@@ -36,13 +36,11 @@ export interface PlayedAnswerCard {
 
 export type GameStatus =
   | "initializing"
-  | "waiting-for-players"
-  | "dealing"
   | "waiting-for-answers"
   | "judging"
   | "game-ended"
   | "display-judgement"
-  | "clearing-played-cards"
+  | "prepare-for-next-round"
   | "announce-winner";
 
 export interface JudgementResult {
@@ -79,8 +77,6 @@ export interface GameState {
   winnerId: string | null;
   currentJudgePlayerIndex: number;
   answerCards: Record<string, AnswerCard>;
-  answerDeck: string[];
-  discardedAnswerCards: string[];
   discardedPromptCards: PromptCard[];
   judgementResult: JudgementResult | null;
 }

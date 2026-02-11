@@ -8,5 +8,4 @@ if (container) {
   console.warn("Cards Against AI root element not found.");
 }
 
-export { App };
 export default App;

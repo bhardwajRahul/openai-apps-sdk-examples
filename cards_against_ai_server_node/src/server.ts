@@ -85,7 +85,6 @@ const widgetCspDomains = buildWidgetCspDomains(
 );
 
 const gamesById = new Map<string, GameRecord>();
-const gamesByKey = new Map<string, GameRecord>();
 
 function normalizeBaseUrl(value: string): string | null {
   const trimmed = value.trim();
@@ -210,16 +209,6 @@ const cpuPersonaParser = z.object({
   favoriteJokeTypes: z.array(z.string()),
 });
 
-const humanPersonaParser = z.object({
-  id: z.string(),
-  name: z.string(),
-  personality: z.string().optional(),
-  likes: z.array(z.string()).optional(),
-  dislikes: z.array(z.string()).optional(),
-  humorStyle: z.array(z.string()).optional(),
-  favoriteJokeTypes: z.array(z.string()).optional(),
-});
-
 const answerCardParser = z.object({
   id: z.string(),
   type: z.literal("answer"),
@@ -244,11 +233,6 @@ const startGameShape = {
   players: z.array(playerInputParser).min(4).max(4),
   firstPrompt: z.string(),
   introDialog: z.array(introDialogEntryParser),
-};
-
-const joinGameShape = {
-  gameKey: z.string(),
-  player: z.object({ id: z.string(), persona: humanPersonaParser }),
 };
 
 const playAnswerCardShape = {
@@ -292,28 +276,6 @@ const submitPromptShape = {
 };
 
 // --- Game logic helpers ---
-
-interface HumanPersonaInput {
-  id: string;
-  name: string;
-  personality?: string;
-  likes?: string[];
-  dislikes?: string[];
-  humorStyle?: string[];
-  favoriteJokeTypes?: string[];
-}
-
-function normalizeHumanPersona(input: HumanPersonaInput) {
-  return {
-    id: input.id,
-    name: input.name,
-    personality: input.personality ?? "",
-    likes: input.likes ?? [],
-    dislikes: input.dislikes ?? [],
-    humorStyle: input.humorStyle ?? [],
-    favoriteJokeTypes: input.favoriteJokeTypes ?? [],
-  };
-}
 
 const WATCH_TIMEOUT_MS = 45_000;
 
@@ -372,7 +334,7 @@ function getGameRecord(gameId: string) {
 }
 
 function formatIntroDialog(introDialog: IntroDialogEntry[]): string {
-  if (!introDialog || introDialog.length === 0) {
+  if (introDialog.length === 0) {
     return "";
   }
 
@@ -438,9 +400,13 @@ function formatCpuAnswerQuips(
 // --- Server creation ---
 
 const toolAnnotations = {
-  destructiveHint: false as const,
-  openWorldHint: false as const,
+  // Game tools only mutate internal server state, not user data —
+  // marking as read-only tells ChatGPT to skip confirmation dialogs.
   readOnlyHint: true as const,
+  // These tools never delete or overwrite user data.
+  destructiveHint: false as const,
+  // These tools don't interact with external services or publish content.
+  openWorldHint: false as const,
 };
 
 function createCardsAgainstAiServer(): McpServer {
@@ -548,15 +514,7 @@ function createCardsAgainstAiServer(): McpServer {
           id: p.id,
           name: p.name,
           type: p.type,
-          persona: p.persona ? {
-            id: p.persona.id,
-            name: p.persona.name,
-            personality: p.persona.personality,
-            likes: p.persona.likes,
-            dislikes: p.persona.dislikes,
-            humorStyle: p.persona.humorStyle,
-            favoriteJokeTypes: p.persona.favoriteJokeTypes,
-          } : null,
+          persona: p.persona ?? null,
           answerCards: p.answerCards,
         })),
         firstPrompt: args.firstPrompt,
@@ -566,53 +524,9 @@ function createCardsAgainstAiServer(): McpServer {
       const gameKey = instance.key;
       const record = { id: gameId, key: gameKey, instance };
       gamesById.set(gameId, record);
-      gamesByKey.set(gameKey, record);
 
       const introTextContent = formatIntroDialog(args.introDialog);
       return buildGameToolResponse("start-game", record, introTextContent);
-    },
-  );
-
-  registerAppTool(
-    server,
-    "join-game",
-    {
-      title: "Join a Cards Against AI game",
-      description:
-        "Joins an existing game by gameKey. Returns gameState and nextAction. Provide a player id and full persona per the schema.",
-      inputSchema: joinGameShape,
-      _meta: toolUiMeta,
-      annotations: toolAnnotations,
-    },
-    async (args) => {
-      const record = gamesByKey.get(args.gameKey);
-
-      if (!record) {
-        return {
-          isError: true,
-          content: [{ type: "text", text: "invalid game code" }],
-        };
-      }
-
-      if (!record.instance.hasVacancy()) {
-        return {
-          isError: true,
-          content: [{ type: "text", text: "server is full" }],
-        };
-      }
-
-      const joined = record.instance.joinPlayer({
-        id: args.player.id,
-        persona: normalizeHumanPersona(args.player.persona),
-      });
-      if (!joined) {
-        return {
-          isError: true,
-          content: [{ type: "text", text: "server is full" }],
-        };
-      }
-
-      return buildGameToolResponse("join-game", record, "");
     },
   );
 
@@ -622,7 +536,7 @@ function createCardsAgainstAiServer(): McpServer {
     {
       title: "Play an answer card",
       description:
-        "Human player plays an answer card from their hand. Returns updated gameState and nextAction.",
+        "Plays an answer card from the human player's hand. The human will provide gameId, playerId, and cardId via chat. Returns updated gameState and nextAction.",
       inputSchema: playAnswerCardShape,
       _meta: toolUiMeta,
       annotations: toolAnnotations,
@@ -663,7 +577,7 @@ function createCardsAgainstAiServer(): McpServer {
     {
       title: "Judge the winning answer card",
       description:
-        "Human judge picks the winning answer card. Returns updated gameState and nextAction.",
+        "Records the human judge's winning card choice. The human will provide gameId, playerId, and winningCardId via chat. Returns updated gameState and nextAction.",
       inputSchema: judgeAnswerCardShape,
       _meta: toolUiMeta,
       annotations: toolAnnotations,
@@ -813,6 +727,18 @@ function createCardsAgainstAiServer(): McpServer {
     async (args) => {
       const record = getGameRecord(args.gameId);
       if (!record) return gameNotFoundError("submit-prompt");
+
+      if (!args.promptText.includes("____")) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: "promptText must contain ____ (four underscores) for the blank.",
+            },
+          ],
+        };
+      }
 
       try {
         record.instance.submitPrompt(args.promptText, args.replacementCards);
