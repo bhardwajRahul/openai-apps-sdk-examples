@@ -78,11 +78,11 @@ export function PlayArea(props: PlayAreaProps) {
           name: "play-answer-card",
           arguments: { gameId, playerId, cardId },
         });
-        // Nudge model to handle CPU turns
-        await app.sendMessage({
-          role: "user",
-          content: [{ type: "text", text: "Continue with the game." }],
-        });
+
+        // TODO: Often the model doesn't trigger the next stage here,
+        // which should be to get the cards from the CPU and/or judge the cards.
+        // unfortunately, calling `sendMessage` here doesn't work and triggers
+        // a new MCP bridge operation, which corrupts the message tree.
       } catch (err) {
         console.error("[cards-ai] playCard failed", err);
       } finally {
@@ -101,6 +101,11 @@ export function PlayArea(props: PlayAreaProps) {
           name: "judge-answer-card",
           arguments: { gameId, playerId: judgeId, winningCardId },
         });
+
+        // TODO: Often the model doesn't trigger the next stage here,
+        // which should be to get the cards from the CPU and/or judge the cards.
+        // unfortunately, calling `sendMessage` here doesn't work and triggers
+        // a new MCP bridge operation, which corrupts the message tree.
       } catch (err) {
         console.error("[cards-ai] judgeCard failed", err);
       } finally {
