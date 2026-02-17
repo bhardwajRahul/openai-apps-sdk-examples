@@ -7,7 +7,6 @@ import { getApiBaseUrl } from "./api-base-url";
 import type { GameState } from "./types";
 
 function useCardsAgainstAIGame() {
-  const [gameState, setGameState] = useState<GameState | null>(null);
   const [gameId, setGameId] = useState<string | null>(null);
 
   const onAppCreated = useCallback((app: McpApp) => {
@@ -28,35 +27,60 @@ function useCardsAgainstAIGame() {
     onAppCreated,
   });
 
+  const gameState = useStreamingGameState(gameId);
+
+  return { gameState, gameId, app } as const;
+}
+
+function useStreamingGameState(gameId: string | null) {
+  const [gameState, setGameState] = useState<GameState | null>(null);
+
   // SSE: open EventSource when gameId is set
   useEffect(() => {
     if (!gameId) return;
 
-    const baseUrl = getApiBaseUrl();
-    const url = `${baseUrl}/mcp/game/${gameId}/state-stream`;
-    const es = new EventSource(url);
+    let cancelled = false;
+    let es: EventSource | null = null;
+    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
-    es.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data) as { gameState?: GameState };
-        if (data.gameState) {
-          setGameState(data.gameState);
+    const connect = () => {
+      if (cancelled) return;
+      const baseUrl = getApiBaseUrl();
+      const url = `${baseUrl}/mcp/game/${gameId}/state-stream`;
+       es = new EventSource(url);
+  
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data) as { gameState?: GameState };
+          if (data.gameState) {
+            setGameState(data.gameState);
+          }
+        } catch {
+          console.warn("[cards-ai] SSE message parse error", event.data);
         }
-      } catch {
-        // Ignore parse errors
-      }
-    };
+      };
+  
+      es.onerror = () => {
+        console.error("[cards-ai] SSE connection error (reconnecting...)");
+        if (cancelled) return;
+        // Reconnect after 5 seconds
+        reconnectTimeout = setTimeout(connect, 5000);
+      };
+    }
 
-    es.onerror = () => {
-      console.error("[cards-ai] SSE connection error");
-    };
+    // Initialize the connection
+    connect();
 
     return () => {
-      es.close();
+      cancelled = true;
+      es?.close();
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+      }
     };
   }, [gameId]);
 
-  return { gameState, gameId, app } as const;
+  return gameState;
 }
 
 export default function App() {
