@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { App as McpApp } from "@modelcontextprotocol/ext-apps/react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CARD_HEIGHT,
   CARD_WIDTH,
@@ -32,9 +31,12 @@ const MIN_PLAY_AREA_HEIGHT =
 // --- Component ---
 
 export interface PlayAreaProps {
-  app: McpApp | null;
-  gameId: string | null;
-  gameState: GameState | null;
+  gameState: GameState;
+  playCard: (cardId: string, playerId: string) => void;
+  judgeCard: (winningCardId: string, judgeId: string) => void;
+  nextRound: () => void;
+  pendingPlayCardId: string | null;
+  pendingJudge: boolean;
 }
 
 /**
@@ -44,20 +46,15 @@ export interface PlayAreaProps {
  * are displayed correctly.
  */
 export function PlayArea(props: PlayAreaProps) {
-  const { app, gameId, gameState } = props;
+  const {
+    gameState,
+    playCard, judgeCard, nextRound,
+    pendingPlayCardId, pendingJudge,
+  } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   const [bounds, setBounds] = useState<Bounds | null>(null);
-  const pendingActionRef = useRef(false);
-  const [pendingPlayCardId, setPendingPlayCardId] = useState<string | null>(null);
-  const [pendingJudge, setPendingJudge] = useState(false);
   const previousPromptRef = useRef<string | null>(null);
   const answerCardsInPlay = useMemo(() => new Set<string>(), []);
-
-  // Clear pending states when game state updates
-  useEffect(() => {
-    setPendingPlayCardId(null);
-    setPendingJudge(false);
-  }, [gameState]);
 
   // --- ResizeObserver for container bounds ---
   useEffect(() => {
@@ -75,127 +72,11 @@ export function PlayArea(props: PlayAreaProps) {
     return () => observer.disconnect();
   }, []);
 
-  // --- Human action handlers ---
-
-  /**
-   * Hybrid pattern: callServerTool + conditional sendMessage.
-   *
-   * `callServerTool` bypasses the model — instant, no confirmation dialog.
-   * Used for human actions (play card, judge card) where the model doesn't
-   * need to decide anything.
-   *
-   * But sometimes the model needs to act next (e.g. CPU turns). The server
-   * signals this via `nextAction.notifyModel` in structuredContent. When true,
-   * we follow up with `sendMessage` to prompt the model to continue the
-   * game loop (e.g. call play-cpu-answer-cards).
-   */
-  const callToolAndNotify = useCallback(
-    async (
-      toolName: string,
-      args: Record<string, unknown>,
-      humanActionSummary: string,
-    ) => {
-      if (!app) return;
-      // callServerTool: calls the MCP server directly, bypassing the model.
-      // The result comes back instantly via the MCP Apps postMessage channel.
-      const result = await app.callServerTool({
-        name: toolName,
-        arguments: args,
-      });
-      // structuredContent is the typed data channel between widget and server.
-      // The model doesn't see it — only the widget reads it.
-      const sc = result?.structuredContent as
-        | { nextAction?: { notifyModel?: boolean; description?: string } | null; cpuContext?: unknown }
-        | undefined;
-
-      if (sc?.nextAction?.notifyModel) {
-        // sendMessage: sends a message into the ChatGPT conversation.
-        // The model reads it and decides what tool to call next.
-        // We include cpuContext so the model has all the info it needs
-        // to play CPU turns (hands, prompt, personas, etc.).
-        const cpuContextStr = sc.cpuContext
-          ? `\n\nCPU Context:\n${JSON.stringify(sc.cpuContext, null, 2)}`
-          : "";
-        await app.sendMessage({
-          role: "user",
-          content: [{
-            type: "text",
-            text: `${humanActionSummary}\n\n${sc.nextAction.description}${cpuContextStr}`,
-          }],
-        });
-      }
-    },
-    [app],
-  );
-
-  const playCard = useCallback(
-    async (cardId: string, playerId: string) => {
-      if (pendingActionRef.current || !app || !gameId) return;
-      pendingActionRef.current = true;
-      setPendingPlayCardId(cardId);
-      try {
-        await callToolAndNotify(
-          "play-answer-card",
-          { gameId, playerId, cardId },
-          `I played answer card ${cardId}.`,
-        );
-      } catch (err) {
-        console.error("[cards-ai] playCard failed", err);
-        setPendingPlayCardId(null);
-      } finally {
-        pendingActionRef.current = false;
-      }
-    },
-    [app, gameId, callToolAndNotify],
-  );
-
-  const judgeCard = useCallback(
-    async (winningCardId: string, judgeId: string) => {
-      if (pendingActionRef.current || !app || !gameId) return;
-      pendingActionRef.current = true;
-      setPendingJudge(true);
-      try {
-        await callToolAndNotify(
-          "judge-answer-card",
-          { gameId, playerId: judgeId, winningCardId },
-          `I judged card ${winningCardId} as the winner.`,
-        );
-      } catch (err) {
-        console.error("[cards-ai] judgeCard failed", err);
-        setPendingJudge(false);
-      } finally {
-        pendingActionRef.current = false;
-      }
-    },
-    [app, gameId, callToolAndNotify],
-  );
-
-  // submit-prompt requires the model's creativity (new prompt text + answer
-  // cards), so we use sendMessage instead of callServerTool. The model reads
-  // the message and calls submit-prompt with generated content.
-  const nextRound = useCallback(async () => {
-    if (pendingActionRef.current || !app || !gameId) return;
-    pendingActionRef.current = true;
-    try {
-      await app.sendMessage({
-        role: "user",
-        content: [{
-          type: "text",
-          text: `I'm ready for the next round. Call the submit-prompt tool for gameId="${gameId}" with a new prompt and replacement answer cards.`,
-        }],
-      });
-    } catch (err) {
-      console.error("[cards-ai] nextRound failed", err);
-    } finally {
-      pendingActionRef.current = false;
-    }
-  }, [app, gameId]);
-
   // --- Build positioned card elements ---
-  const localPlayerId = gameState ? getLocalPlayerId(gameState) : null;
+  const localPlayerId = getLocalPlayerId(gameState);
 
   const positionedCards = useMemo<React.ReactNode[]>(() => {
-    if (!bounds || !gameState) return [];
+    if (!bounds) return [];
 
     const answerCardsNotInPlay = new Set<string>(answerCardsInPlay);
     answerCardsInPlay.clear();
@@ -351,8 +232,6 @@ export function PlayArea(props: PlayAreaProps) {
 
     return elements;
   }, [gameState, bounds, playCard, judgeCard, pendingPlayCardId, pendingJudge]);
-
-  if (!gameState) return null;
 
   const { players, currentJudgePlayerIndex, status, winnerId } = gameState;
 

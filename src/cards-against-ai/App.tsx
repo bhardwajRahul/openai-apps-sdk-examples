@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useApp } from "@modelcontextprotocol/ext-apps/react";
 import type { App as McpApp } from "@modelcontextprotocol/ext-apps/react";
 import { PlayArea } from "./PlayArea";
@@ -7,53 +7,44 @@ import { getApiBaseUrl } from "./api-base-url";
 import type { GameState } from "./types";
 
 /**
- * Wires up the two MCP Apps data channels:
- * 1. `ontoolresult` — fires on every tool response. We use it once to grab the
- *    gameId from `start-game`, which bootstraps the SSE connection.
- * 2. SSE (`useStreamingGameState`) — server pushes the full gameState on every
- *    change, so the widget stays in sync independent of its own actions.
+ * Owns ALL game state and actions. Two data channels feed state updates:
+ * 1. `ontoolresult` — fires on every tool response (bug fix: now updates gameState)
+ * 2. SSE — server pushes full gameState on every change
+ *
+ * Both channels call `updateGameState`, which sets state AND clears pending
+ * UI flags in a single synchronous batch — no useEffect needed.
  */
 function useCardsAgainstAIGame() {
   const [gameId, setGameId] = useState<string | null>(null);
+  const [gameState, setGameState] = useState<GameState | null>(null);
+  const [pendingPlayCardId, setPendingPlayCardId] = useState<string | null>(null);
+  const [pendingJudge, setPendingJudge] = useState(false);
+  const pendingActionRef = useRef(false);
 
-  const onAppCreated = useCallback((app: McpApp) => {
-    // ontoolresult fires on every tool response the model makes.
-    // We only care about the first one (start-game) to extract the gameId.
-    // After that, SSE delivers all state updates.
-    app.ontoolresult = (params) => {
-      const sc = params.structuredContent as
-        | { gameId?: string }
-        | undefined;
-      if (sc?.gameId) {
-        setGameId(sc.gameId);
-      }
-    };
+  // Sets gameState and clears pending UI states in one batch.
+  const updateGameState = useCallback((state: GameState) => {
+    setGameState(state);
+    setPendingPlayCardId(null);
+    setPendingJudge(false);
   }, []);
 
-  // useApp() initializes the MCP Apps connection via postMessage/JSON-RPC.
-  // `appInfo` identifies this widget to the host (ChatGPT).
-  // `onAppCreated` runs once after the host handshake completes.
+  const onAppCreated = useCallback((app: McpApp) => {
+    app.ontoolresult = (params) => {
+      const sc = params.structuredContent as
+        | { gameId?: string; gameState?: GameState }
+        | undefined;
+      if (sc?.gameId) setGameId(sc.gameId);
+      if (sc?.gameState) updateGameState(sc.gameState);
+    };
+  }, [updateGameState]);
+
   const { app } = useApp({
     appInfo: { name: "cards-against-ai", version: "1.0.0" },
     capabilities: {},
     onAppCreated,
   });
 
-  const gameState = useStreamingGameState(gameId);
-
-  return { gameState, gameId, app } as const;
-}
-
-/**
- * SSE is used instead of tool responses for ongoing state because state changes
- * happen server-side (from other tool calls the model makes). The widget needs
- * real-time updates independent of its own actions — e.g. when the model plays
- * CPU answer cards, the widget must see the new state immediately.
- */
-function useStreamingGameState(gameId: string | null) {
-  const [gameState, setGameState] = useState<GameState | null>(null);
-
-  // Open an EventSource to the server's custom SSE endpoint when gameId is set.
+  // SSE — server pushes full gameState on every change.
   useEffect(() => {
     if (!gameId) return;
 
@@ -63,30 +54,38 @@ function useStreamingGameState(gameId: string | null) {
 
     const connect = () => {
       if (cancelled) return;
+      // Close previous EventSource before opening a new one
+      es?.close();
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+      }
+
       const baseUrl = getApiBaseUrl();
       const url = `${baseUrl}/mcp/game/${gameId}/state-stream`;
-       es = new EventSource(url);
-  
+      es = new EventSource(url);
+
       es.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data) as { gameState?: GameState };
           if (data.gameState) {
-            setGameState(data.gameState);
+            updateGameState(data.gameState);
           }
         } catch {
           console.warn("[cards-ai] SSE message parse error", event.data);
         }
       };
-  
+
       es.onerror = () => {
         console.error("[cards-ai] SSE connection error (reconnecting...)");
+        // Close to disable browser auto-reconnect
+        es?.close();
+        es = null;
         if (cancelled) return;
-        // Reconnect after 5 seconds
         reconnectTimeout = setTimeout(connect, 5000);
       };
-    }
+    };
 
-    // Initialize the connection
     connect();
 
     return () => {
@@ -96,13 +95,114 @@ function useStreamingGameState(gameId: string | null) {
         clearTimeout(reconnectTimeout);
       }
     };
-  }, [gameId]);
+  }, [gameId, updateGameState]);
 
-  return gameState;
+  // --- Game actions ---
+
+  const callToolAndNotify = useCallback(
+    async (
+      toolName: string,
+      args: Record<string, unknown>,
+      humanActionSummary: string,
+    ) => {
+      if (!app) return;
+      const result = await app.callServerTool({
+        name: toolName,
+        arguments: args,
+      });
+      const sc = result?.structuredContent as
+        | { nextAction?: { notifyModel?: boolean; description?: string } | null; cpuContext?: unknown }
+        | undefined;
+
+      if (sc?.nextAction?.notifyModel) {
+        const cpuContextStr = sc.cpuContext
+          ? `\n\nCPU Context:\n${JSON.stringify(sc.cpuContext, null, 2)}`
+          : "";
+        await app.sendMessage({
+          role: "user",
+          content: [{
+            type: "text",
+            text: `${humanActionSummary}\n\n${sc.nextAction.description}${cpuContextStr}`,
+          }],
+        });
+      }
+    },
+    [app],
+  );
+
+  const playCard = useCallback(
+    async (cardId: string, playerId: string) => {
+      if (pendingActionRef.current || !app || !gameId) return;
+      pendingActionRef.current = true;
+      setPendingPlayCardId(cardId);
+      try {
+        await callToolAndNotify(
+          "play-answer-card",
+          { gameId, playerId, cardId },
+          `I played answer card ${cardId}.`,
+        );
+      } catch (err) {
+        console.error("[cards-ai] playCard failed", err);
+        setPendingPlayCardId(null);
+      } finally {
+        pendingActionRef.current = false;
+      }
+    },
+    [app, gameId, callToolAndNotify],
+  );
+
+  const judgeCard = useCallback(
+    async (winningCardId: string, judgeId: string) => {
+      if (pendingActionRef.current || !app || !gameId) return;
+      pendingActionRef.current = true;
+      setPendingJudge(true);
+      try {
+        await callToolAndNotify(
+          "judge-answer-card",
+          { gameId, playerId: judgeId, winningCardId },
+          `I judged card ${winningCardId} as the winner.`,
+        );
+      } catch (err) {
+        console.error("[cards-ai] judgeCard failed", err);
+        setPendingJudge(false);
+      } finally {
+        pendingActionRef.current = false;
+      }
+    },
+    [app, gameId, callToolAndNotify],
+  );
+
+  const nextRound = useCallback(async () => {
+    if (pendingActionRef.current || !app || !gameId) return;
+    pendingActionRef.current = true;
+    try {
+      await app.sendMessage({
+        role: "user",
+        content: [{
+          type: "text",
+          text: `I'm ready for the next round. Call the submit-prompt tool for gameId="${gameId}" with a new prompt and replacement answer cards.`,
+        }],
+      });
+    } catch (err) {
+      console.error("[cards-ai] nextRound failed", err);
+    } finally {
+      pendingActionRef.current = false;
+    }
+  }, [app, gameId]);
+
+  return {
+    gameState, app,
+    playCard, judgeCard, nextRound,
+    pendingPlayCardId, pendingJudge,
+  } as const;
 }
 
 export default function App() {
-  const { gameState, gameId, app } = useCardsAgainstAIGame();
+  const {
+    gameState, app,
+    playCard, judgeCard, nextRound,
+    pendingPlayCardId, pendingJudge,
+  } = useCardsAgainstAIGame();
   const [pipStarted, setPipStarted] = useState(false);
 
   if (!pipStarted) {
@@ -110,8 +210,6 @@ export default function App() {
       <SplashScreen
         status={gameState?.status ?? "initializing"}
         onStart={() => {
-          // Request picture-in-picture mode so the widget stays visible
-          // while the user continues chatting with the model.
           app?.requestDisplayMode({ mode: "pip" });
           setPipStarted(true);
         }}
@@ -125,9 +223,12 @@ export default function App() {
 
   return (
     <PlayArea
-      app={app}
-      gameId={gameId}
       gameState={gameState}
+      playCard={playCard}
+      judgeCard={judgeCard}
+      nextRound={nextRound}
+      pendingPlayCardId={pendingPlayCardId}
+      pendingJudge={pendingJudge}
     />
   );
 }
