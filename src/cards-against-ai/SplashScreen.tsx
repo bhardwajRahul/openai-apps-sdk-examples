@@ -52,7 +52,7 @@ export function SplashScreen({ status, onStart }: SplashScreenProps) {
           <button
             type="button"
             onClick={onStart}
-            className="rounded-lg bg-slate-900 px-6 py-2.5 text-sm font-semibold text-white shadow-md transition-all hover:bg-slate-800 hover:shadow-lg active:scale-95 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-200"
+            className="rounded-lg border border-slate-300 bg-white px-6 py-2.5 text-sm font-semibold text-slate-900 shadow-md transition-all hover:bg-slate-100 hover:shadow-lg active:scale-95 dark:border-slate-400 dark:bg-white/10 dark:text-slate-100 dark:hover:bg-white/20"
           >
             Start Game
           </button>

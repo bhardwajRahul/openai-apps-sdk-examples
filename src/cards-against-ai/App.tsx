@@ -4,7 +4,7 @@ import type { App as McpApp } from "@modelcontextprotocol/ext-apps/react";
 import { PlayArea } from "./PlayArea";
 import { SplashScreen } from "./SplashScreen";
 import { getApiBaseUrl } from "./api-base-url";
-import type { GameState } from "./types";
+import type { GameState, NextActionHint } from "./types";
 
 /**
  * Owns ALL game state and actions. Two data channels feed state updates:
@@ -19,6 +19,8 @@ function useCardsAgainstAIGame() {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [pendingPlayCardId, setPendingPlayCardId] = useState<string | null>(null);
   const [pendingJudge, setPendingJudge] = useState(false);
+  const [pendingNextRound, setPendingNextRound] = useState(false);
+  const [lastNextAction, setLastNextAction] = useState<NextActionHint>(null);
   const pendingActionRef = useRef(false);
 
   // Sets gameState and clears pending UI states in one batch.
@@ -26,6 +28,8 @@ function useCardsAgainstAIGame() {
     setGameState(state);
     setPendingPlayCardId(null);
     setPendingJudge(false);
+    setPendingNextRound(false);
+    setLastNextAction(null);
   }, []);
 
   const onAppCreated = useCallback((app: McpApp) => {
@@ -67,9 +71,15 @@ function useCardsAgainstAIGame() {
 
       es.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data) as { gameState?: GameState };
+          const data = JSON.parse(event.data) as {
+            gameState?: GameState;
+            nextAction?: NextActionHint;
+          };
           if (data.gameState) {
             updateGameState(data.gameState);
+          }
+          if (data.nextAction) {
+            setLastNextAction(data.nextAction);
           }
         } catch {
           console.warn("[cards-ai] SSE message parse error", event.data);
@@ -96,6 +106,26 @@ function useCardsAgainstAIGame() {
       }
     };
   }, [gameId, updateGameState]);
+
+  // Watchdog: if the model ignores a notifyModel hint, nudge it after 5s.
+  useEffect(() => {
+    if (!lastNextAction?.notifyModel || !app || !gameId) return;
+    const staleStatus = gameState?.status;
+    const timer = setTimeout(() => {
+      // Only nudge if state hasn't progressed
+      if (gameState?.status === staleStatus) {
+        app.sendMessage({
+          role: "user",
+          content: [{
+            type: "text",
+            text: `Game stalled. ${lastNextAction.description}`,
+          }],
+        });
+        setLastNextAction(null);
+      }
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [lastNextAction, gameState?.status, app, gameId]);
 
   // --- Game actions ---
 
@@ -175,6 +205,7 @@ function useCardsAgainstAIGame() {
   const nextRound = useCallback(async () => {
     if (pendingActionRef.current || !app || !gameId || !gameState) return;
     pendingActionRef.current = true;
+    setPendingNextRound(true);
     try {
       // Build context so the model knows exactly what submit-prompt needs.
       const judge = gameState.players[gameState.currentJudgePlayerIndex];
@@ -211,7 +242,7 @@ function useCardsAgainstAIGame() {
   return {
     gameState, app,
     playCard, judgeCard, nextRound,
-    pendingPlayCardId, pendingJudge,
+    pendingPlayCardId, pendingJudge, pendingNextRound,
   } as const;
 }
 
@@ -219,7 +250,7 @@ export default function App() {
   const {
     gameState, app,
     playCard, judgeCard, nextRound,
-    pendingPlayCardId, pendingJudge,
+    pendingPlayCardId, pendingJudge, pendingNextRound,
   } = useCardsAgainstAIGame();
   const [pipStarted, setPipStarted] = useState(false);
 
@@ -247,6 +278,7 @@ export default function App() {
       nextRound={nextRound}
       pendingPlayCardId={pendingPlayCardId}
       pendingJudge={pendingJudge}
+      pendingNextRound={pendingNextRound}
     />
   );
 }

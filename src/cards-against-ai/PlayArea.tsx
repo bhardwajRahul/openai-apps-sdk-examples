@@ -37,6 +37,7 @@ export interface PlayAreaProps {
   nextRound: () => void;
   pendingPlayCardId: string | null;
   pendingJudge: boolean;
+  pendingNextRound: boolean;
 }
 
 /**
@@ -49,7 +50,7 @@ export function PlayArea(props: PlayAreaProps) {
   const {
     gameState,
     playCard, judgeCard, nextRound,
-    pendingPlayCardId, pendingJudge,
+    pendingPlayCardId, pendingJudge, pendingNextRound,
   } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   const [bounds, setBounds] = useState<Bounds | null>(null);
@@ -181,7 +182,7 @@ export function PlayArea(props: PlayAreaProps) {
         answerCardsNotInPlay.delete(cardId);
 
         const isOffscreen = localPlayerIsJudge || localPlayerHasPlayedACard;
-        const isInteractive = !isOffscreen;
+        const isInteractive = !localPlayerIsJudge && !localPlayerHasPlayedACard;
 
         const position = {
           x:
@@ -256,12 +257,18 @@ export function PlayArea(props: PlayAreaProps) {
         />
       </div>
       {status === "display-judgement" && (
-        <button
-          className="absolute bottom-4 right-4 z-20 rounded-lg border border-white/80 bg-white/15 px-5 py-2.5 text-lg font-bold text-white shadow-lg backdrop-blur-md transition-colors hover:bg-white/25 active:bg-white/35"
-          onClick={nextRound}
-        >
-          Next Round &rarr;
-        </button>
+        pendingNextRound ? (
+          <span className="absolute bottom-4 right-4 z-20 rounded-lg border border-white/40 bg-white/10 px-5 py-2.5 text-lg font-bold text-white/60 shadow-lg backdrop-blur-md">
+            Preparing next round&hellip;
+          </span>
+        ) : (
+          <button
+            className="absolute bottom-4 right-4 z-20 rounded-lg border border-white/80 bg-white/15 px-5 py-2.5 text-lg font-bold text-white shadow-lg backdrop-blur-md transition-colors hover:bg-white/25 active:bg-white/35"
+            onClick={nextRound}
+          >
+            Next Round &rarr;
+          </button>
+        )
       )}
       {winner && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/60 backdrop-blur-lg">
