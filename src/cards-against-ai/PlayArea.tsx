@@ -259,7 +259,7 @@ export function PlayArea(props: PlayAreaProps) {
       {status === "display-judgement" && (
         pendingNextRound ? (
           <span className="absolute bottom-4 right-4 z-20 rounded-lg border border-white/40 bg-white/10 px-5 py-2.5 text-lg font-bold text-white/60 shadow-lg backdrop-blur-md">
-            Preparing next round&hellip;
+            Waiting&hellip;
           </span>
         ) : (
           <button

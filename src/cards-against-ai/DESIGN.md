@@ -9,7 +9,7 @@ Uses `@modelcontextprotocol/ext-apps` — widget communicates via `postMessage` 
 Hybrid approach — two mechanisms for widget→server communication, plus SSE for state delivery:
 
 1. **`callServerTool`** — direct tool calls that bypass the model. Used for `play-answer-card` and `judge-answer-card`. No confirmation dialog, instant execution.
-2. **`sendMessage`** — routes through the model. Triggered automatically when `nextAction.notifyModel` is `true` (e.g. after play-answer-card when CPU needs to act). Also used for `submit-prompt` (next round button).
+2. **`sendFollowUp`** — helper that prefers `window.openai.sendFollowUpMessage` (scrolls to bottom) with fallback to `app.sendMessage`. Routes through the model. Triggered when `nextAction.notifyModel` is `true` (e.g. after play-answer-card when CPU needs to act). Also used for `submit-prompt` (next round button) and the watchdog timer.
 3. **SSE** (`/mcp/game/:gameId/state-stream`) — server pushes full `gameState` on every state change. Single `EventSource` per game, opened when `gameId` is known.
 
 `ontoolresult` is kept solely for bootstrapping: it delivers the initial `gameId` from `start-game`, which opens the SSE connection.
@@ -44,7 +44,6 @@ Human clicks "Next Round"
 | `play-cpu-answer-cards` | LLM (via sendMessage) | CPU players play their answer cards |
 | `cpu-judge-answer-card` | LLM (via sendMessage) | CPU judge picks the winning card |
 | `submit-prompt` | LLM (via sendMessage) | New prompt + replacement cards for next round |
-| `post-banter` | LLM | In-character dialog from CPU players (chat flavor, no game state change) |
 
 ## Human as Judge
 
@@ -57,4 +56,4 @@ When the human is the judge, the game loop differs:
 
 ## CPU Dialog
 
-CPU tool responses include formatted textContent (e.g. character quips when playing cards, judge announcements). ChatGPT presents this naturally in the chat stream.
+CPU dialog is generated inline by the model in its response text — there is no separate banter tool. Tool descriptions instruct the model to write in-character quips, reactions, and between-round banter alongside each game action.

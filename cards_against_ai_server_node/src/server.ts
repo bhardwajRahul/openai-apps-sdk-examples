@@ -250,16 +250,6 @@ const submitPromptShape = {
   replacementCards: z.array(replacementCardParser),
 };
 
-const postBanterShape = {
-  gameId: z.string(),
-  messages: z.array(
-    z.object({
-      playerId: z.string(),
-      message: z.string(),
-    }),
-  ),
-};
-
 // --- Game logic helpers ---
 
 /**
@@ -643,7 +633,7 @@ function createCardsAgainstAiServer(): McpServer {
     {
       title: "CPU players play answer cards",
       description:
-        "When nextAction.action === 'play-cpu-answer-cards', use this tool to submit CPU player card selections. Provide cpuAnswerChoices with playerId, cardId, and optional playerComment for each CPU player. Read CPU persona details and card hands from structuredContent.cpuContext in the previous response. CRITICAL: After receiving the response, if the current judge is a CPU, you MUST call cpu-judge-answer-card IMMEDIATELY as your very next tool call — do NOT call post-banter first or the game will stall. Only call post-banter if the current judge is human. Returns updated gameState and nextAction.",
+        "When nextAction.action === 'play-cpu-answer-cards', use this tool to submit CPU player card selections. Provide cpuAnswerChoices with playerId, cardId, and optional playerComment for each CPU player. Read CPU persona details and card hands from structuredContent.cpuContext in the previous response. CRITICAL: After receiving the response, if the current judge is a CPU, you MUST call cpu-judge-answer-card IMMEDIATELY as your very next tool call. In your response text, write a brief in-character quip from each CPU player as they play their card (1-2 sentences each, using persona details). Occasionally reference or tease the human player by name. Returns updated gameState and nextAction.",
       inputSchema: playCpuAnswerCardsShape,
       _meta: toolUiMeta,
       annotations: toolAnnotations,
@@ -686,7 +676,7 @@ function createCardsAgainstAiServer(): McpServer {
     {
       title: "CPU judge picks the winning answer card",
       description:
-        "When nextAction.action === 'cpu-judge-answer-card', you MUST call this tool immediately — the game will stall if you don't. Submit the CPU judge's verdict with winningCardId and optional reactionToWinningCard. Read the played answer cards from structuredContent.cpuContext in the previous response. After receiving the response, call `post-banter` with other players reacting to the verdict. Returns updated gameState and nextAction.",
+        "When nextAction.action === 'cpu-judge-answer-card', you MUST call this tool immediately — the game will stall if you don't. Submit the CPU judge's verdict with winningCardId and optional reactionToWinningCard. Read the played answer cards from structuredContent.cpuContext in the previous response. In your response text, narrate the judge's dramatic reveal and have 1-2 other players react (groans, celebrations, accusations). Reference the human player sometimes — tease their card, congratulate them, etc. Returns updated gameState and nextAction.",
       inputSchema: cpuJudgeAnswerCardShape,
       _meta: toolUiMeta,
       annotations: toolAnnotations,
@@ -745,7 +735,7 @@ function createCardsAgainstAiServer(): McpServer {
     {
       title: "Submit a prompt card for the round",
       description:
-        "When nextAction.action === 'submit-prompt', provide a new prompt card and replacement answer cards. Only callable when the game is in display-judgement or prepare-for-next-round status — calling at other times will return an error with the correct nextAction. The promptText must include exactly one blank (____). The replacementCards array should include one new answer card for each player who played last round (not the judge). After receiving the response, call `post-banter` with between-round chatter — reactions to the last round, smack-talk, or hype for the next round. Returns updated gameState and nextAction.",
+        "When nextAction.action === 'submit-prompt', provide a new prompt card and replacement answer cards. Only callable when the game is in display-judgement or prepare-for-next-round status — calling at other times will return an error with the correct nextAction. The promptText must include exactly one blank (____). The replacementCards array should include one new answer card for each player who played last round (not the judge). In your response text, include brief between-round banter from 1-2 CPU players. Address the human player occasionally. Returns updated gameState and nextAction.",
       inputSchema: submitPromptShape,
       _meta: toolUiMeta,
       annotations: toolAnnotations,
@@ -793,52 +783,6 @@ function createCardsAgainstAiServer(): McpServer {
 
       const result = buildGameToolResponse("submit-prompt", record, "");
       logToolCall("submit-prompt", args, result);
-      return result;
-    },
-  );
-
-  registerAppTool(
-    server,
-    "post-banter",
-    {
-      title: "Post cross-player banter",
-      description:
-        "Call this tool after game action tools to add personality-driven cross-player banter. IMPORTANT: Do NOT call post-banter between play-cpu-answer-cards and cpu-judge-answer-card — when a CPU is judging, you must call cpu-judge-answer-card immediately after play-cpu-answer-cards, then call post-banter after the judgement. Also call when responding to user's conversational messages to have CPU players react. Use persona details (personality, humorStyle, catchphrase, quirks, voiceTone, competitiveness) to stay in character. Mix game reactions, trash-talk, and personality-driven tangents. Not every character needs to speak every time — vary participation. Format each message as dialog from the character's perspective.",
-      inputSchema: postBanterShape,
-      _meta: toolUiMeta,
-      annotations: toolAnnotations,
-    },
-    async (args) => {
-      const record = getGameRecord(args.gameId);
-      if (!record) {
-        const result = gameNotFoundError("post-banter");
-        logToolCall("post-banter", args, result);
-        return result;
-      }
-
-      const state = record.instance.getState();
-      const playerMap = new Map(state.players.map((p) => [p.id, p]));
-
-      // Resolve player names and validate IDs
-      const chatMessages = args.messages
-        .filter((m) => playerMap.has(m.playerId))
-        .map((m) => ({
-          playerId: m.playerId,
-          playerName: playerMap.get(m.playerId)!.persona?.name ?? "Unknown",
-          message: m.message.trim(),
-        }));
-
-      if (chatMessages.length > 0) {
-        record.instance.addBanter(chatMessages);
-      }
-
-      // Format banter as text content for the conversation
-      const banterText = chatMessages
-        .map((m) => `**${m.playerName}**: "${m.message}"`)
-        .join("\n\n");
-
-      const result = buildGameToolResponse("post-banter", record, banterText);
-      logToolCall("post-banter", args, result);
       return result;
     },
   );

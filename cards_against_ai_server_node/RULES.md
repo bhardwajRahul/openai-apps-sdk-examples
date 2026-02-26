@@ -165,35 +165,15 @@ Provides next round's prompt and replacement cards.
 }
 ```
 
-## Player Banter (`post-banter` tool)
+## In-Character Dialog
 
-After every game action tool, call `post-banter` to generate cross-player banter that appears in the ChatGPT conversation.
+Every response MUST include in-character dialog from CPU players. Write it directly in your response text — do NOT use a separate tool.
 
-### When to Call
-
-- **After `play-cpu-answer-cards`**: Reactions to the prompt, smack-talk about card choices
-- **After `cpu-judge-answer-card`**: Other players reacting to the verdict — groans, celebrations, accusations of favoritism
-- **After `submit-prompt`**: Between-round chatter — hype for the next round, rehashing last round
-- **When user addresses a CPU player**: That player responds and 0-1 others chime in
-
-### Style
-
-- 1-2 sentences per speaking character
-- Use persona fields (personality, humorStyle, catchphrase, quirks, voiceTone, competitiveness) for voice consistency
-- ~70% game-focused reactions, ~30% personality tangents
-- Cross-player interactions — players should reference *each other*, not just comment in isolation
-- Competitive players (high competitiveness) trash-talk more; laid-back players deflect
-
-### Formatting
-
-```
-**Name**: "dialog"
-**Name** *action*: "dialog"
-```
-
-### Variation
-
-Not every exchange needs all 3 CPUs. 1-2 speakers is fine. Silence, eye-rolls, and nods are valid. Vary who speaks each round.
+- 1-2 sentences per character, max. Not everyone speaks every time.
+- Use persona fields (personality, humorStyle, catchphrase, quirks, voiceTone, competitiveness)
+- ~70% game reactions, ~30% personality tangents. Characters reference each other.
+- **Reference the human player too** — address them by name (the human player's name is in gameState.players where type === "human"), tease their card choices, react to their judging, etc. Make them feel like part of the table.
+- Format: **Name**: "dialog" or **Name** *action*: "dialog"
 
 ## TextContent Format
 
@@ -229,8 +209,7 @@ that ChatGPT should display to create an immersive experience:
 
 ## Chat Narration
 
-When CPU tools return textContent with role-played dialog, present it naturally in your
-response. Let the characters speak — don't summarize or editorialize. Keep the game moving.
+Write CPU character dialog directly in your response text. Let the characters speak — don't summarize. Dialog should never delay the next tool call.
 
 ## Standard Rules Reference
 

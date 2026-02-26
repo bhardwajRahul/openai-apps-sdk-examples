@@ -7,6 +7,29 @@ import { getApiBaseUrl } from "./api-base-url";
 import type { GameState, NextActionHint } from "./types";
 
 /**
+ * Sends a message to the model, preferring `sendFollowUpMessage` (scrolls to
+ * bottom) with a fallback to `app.sendMessage` for hosts that don't support window.openai
+ */
+async function sendFollowUp(
+  app: McpApp,
+  text: string,
+): Promise<void> {
+  const openai = window.openai;
+  if (openai?.sendFollowUpMessage) {
+    try {
+      await openai.sendFollowUpMessage({ prompt: text, scrollToBottom: true });
+      return;
+    } catch (err) {
+      console.warn("[cards-ai] sendFollowUpMessage failed, falling back to sendMessage", err);
+    }
+  }
+  await app.sendMessage({
+    role: "user",
+    content: [{ type: "text", text }],
+  });
+}
+
+/**
  * Owns ALL game state and actions. Two data channels feed state updates:
  * 1. `ontoolresult` — fires on every tool response (bug fix: now updates gameState)
  * 2. SSE — server pushes full gameState on every change
@@ -107,25 +130,29 @@ function useCardsAgainstAIGame() {
     };
   }, [gameId, updateGameState]);
 
-  // Watchdog: if the model ignores a notifyModel hint, nudge it after 5s.
+  // Watchdog: if the model ignores a notifyModel hint, nudge it after 15s.
   useEffect(() => {
     if (!lastNextAction?.notifyModel || !app || !gameId) return;
     const staleStatus = gameState?.status;
     const timer = setTimeout(() => {
       // Only nudge if state hasn't progressed
       if (gameState?.status === staleStatus) {
-        app.sendMessage({
-          role: "user",
-          content: [{
-            type: "text",
-            text: `Game stalled. ${lastNextAction.description}`,
-          }],
-        });
+        sendFollowUp(
+          app,
+          `[GAME ACTION REQUIRED] ${lastNextAction.description}\nThe game is waiting on you. Take the action above NOW.\nWrite a brief line of in-character dialog from a CPU player while you do it.`,
+        );
         setLastNextAction(null);
       }
-    }, 5000);
+    }, 15_000);
     return () => clearTimeout(timer);
   }, [lastNextAction, gameState?.status, app, gameId]);
+
+  // Safety net: auto-clear pendingNextRound if the model never calls submit-prompt.
+  useEffect(() => {
+    if (!pendingNextRound) return;
+    const id = setTimeout(() => setPendingNextRound(false), 15_000);
+    return () => clearTimeout(id);
+  }, [pendingNextRound]);
 
   // --- Game actions ---
 
@@ -148,13 +175,10 @@ function useCardsAgainstAIGame() {
         const cpuContextStr = sc.cpuContext
           ? `\n\nCPU Context:\n${JSON.stringify(sc.cpuContext, null, 2)}`
           : "";
-        await app.sendMessage({
-          role: "user",
-          content: [{
-            type: "text",
-            text: `${humanActionSummary}\n\n${sc.nextAction.description}${cpuContextStr}`,
-          }],
-        });
+        await sendFollowUp(
+          app,
+          `${humanActionSummary}\n\n${sc.nextAction.description}${cpuContextStr}\n\nStay in character. Write a brief quip or reaction from each CPU player as they take their action.`,
+        );
       }
     },
     [app],
@@ -223,17 +247,14 @@ function useCardsAgainstAIGame() {
         ...(previousPrompts.length > 0
           ? [`Previous prompts (do NOT repeat): ${previousPrompts.join("; ")}`]
           : []),
+        "",
+        `Add a line or two of between-round banter from the CPU players — reactions to last round, trash-talk, or hype for the next prompt.`,
       ];
 
-      await app.sendMessage({
-        role: "user",
-        content: [{
-          type: "text",
-          text: contextLines.join("\n"),
-        }],
-      });
+      await sendFollowUp(app, contextLines.join("\n"));
     } catch (err) {
       console.error("[cards-ai] nextRound failed", err);
+      setPendingNextRound(false);
     } finally {
       pendingActionRef.current = false;
     }

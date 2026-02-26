@@ -273,11 +273,22 @@ export class GameInstance extends EventEmitter {
     this.dispatchAction({ type: "PREPARE_FOR_NEXT_ROUND" });
 
     // Deal replacement cards only to players who actually played (hand < 7 cards)
+    // Re-key cards server-side to avoid duplicates from model-generated IDs
     if (replacementCards && replacementCards.length > 0) {
-      const filtered = replacementCards.filter((rc) => {
-        const player = this.state.players.find((p) => p.id === rc.playerId);
-        return player && player.answerCards.length < 7;
-      });
+      const usedIds = new Set(Object.keys(this.state.answerCards));
+      const filtered = replacementCards
+        .filter((rc) => {
+          const player = this.state.players.find((p) => p.id === rc.playerId);
+          return player && player.answerCards.length < 7;
+        })
+        .map((rc) => {
+          let id = rc.card.id;
+          if (usedIds.has(id)) {
+            id = `ans-${crypto.randomUUID().slice(0, 8)}`;
+          }
+          usedIds.add(id);
+          return { ...rc, card: { ...rc.card, id } };
+        });
       if (filtered.length > 0) {
         this.dispatchAction({ type: "DEAL_REPLACEMENT_CARDS", replacementCards: filtered });
       }
