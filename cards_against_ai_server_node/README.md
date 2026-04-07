@@ -7,7 +7,7 @@ MCP Apps backend that drives a card game through ChatGPT's model while keeping a
 ```bash
 pnpm install              # from repo root
 cd cards_against_ai_server_node
-pnpm run dev              # builds widget + starts server on :8000
+pnpm start                # builds widget + starts server on :8000
 ```
 
 The server serves widget assets and MCP endpoint from the same port (8000).
@@ -17,7 +17,7 @@ The server serves widget assets and MCP endpoint from the same port (8000).
 ```bash
 echo 'BASE_URL=https://your-domain.ngrok.app' > .env.local  # in repo root
 ngrok http 8000 --domain your-domain.ngrok.app
-cd cards_against_ai_server_node && pnpm run dev
+cd cards_against_ai_server_node && pnpm start
 ```
 
 Single tunnel, single server.
@@ -26,10 +26,11 @@ Single tunnel, single server.
 
 | Script | Description |
 |--------|-------------|
+| `pnpm start` | Build widget + start server |
 | `pnpm run dev` | Build widget + start server |
 | `pnpm run build` | Build widget only |
 | `pnpm run build:check` | Build widget + typecheck app + server |
-| `pnpm start` | Start server (no build) |
+| `pnpm run start:server` | Start server without rebuilding assets |
 
 ## Key MCP Apps Concepts
 
